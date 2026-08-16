@@ -23,3 +23,6 @@ my-JDownloader.xml
 
 # proprietary font used at build time to render the wordmark to paths (never committed)
 .github/assets/_fonts/
+
+# Local JDK / ASM test output (downloaded on demand)
+local-tests-out/

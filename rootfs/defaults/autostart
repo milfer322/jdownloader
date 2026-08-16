@@ -122,9 +122,9 @@ else:
 PYEOF
 }
 
-# Classic JDDEFAULT needs synthetica.jar (+ optional skins). License alone is not
-# enough: without the jars SyntheticaHelper/JDDefaultLookAndFeel fails and JD
-# falls back to MetalLookAndFeel.
+# Classic JDDEFAULT needs synthetica.jar + syntheticaJDCustom.jar (+ license).
+# License alone is not enough: without BOTH jars SyntheticaHelper/JDDefaultLookAndFeel
+# fails and JD falls back to MetalLookAndFeel. Core-alone also yields Metal.
 #
 # Extension IDs (cited from upstream JD):
 #   - LookAndFeelType optional Synthetica skins -> extensionID "synthetica-themes"
@@ -133,14 +133,18 @@ PYEOF
 # We request both so the updater fetches core jar + skins; DEFAULT's enum ID stays null.
 seed_synthetica_request() {
     [ "${EXPECT_CLASSIC}" = "1" ] || return 0
-    # Only skip seeding when a VALID jar exists — truncated leftovers must not block re-request.
+    # Skip only when BOTH core + JDCustom are valid — core alone must keep seeding.
     if [ -f "${HELPERS}" ]; then
-        python3 "${HELPERS}" any-synthetica-valid "${JD_DIR}/libs/laf" && return 0
+        python3 "${HELPERS}" classic-jars-ready "${JD_DIR}/libs/laf" && return 0
         python3 "${HELPERS}" seed-synthetica \
-            "${JD_DIR}/update/versioninfo/JD/extensions.requestedinstalls.json" >&2 || true
+            "${JD_DIR}/update/versioninfo/JD/extensions.requestedinstalls.json" \
+            "${JD_DIR}/libs/laf" \
+            "${JD_DIR}/update/versioninfo/JD/extensions.installed.json" >&2 || true
         return 0
     fi
-    ls "${JD_DIR}/libs/laf"/synthetica*.jar >/dev/null 2>&1 && return 0
+    # Inline fallback (no helpers): require both jar files by name.
+    [ -f "${JD_DIR}/libs/laf/synthetica.jar" ] \
+        && [ -f "${JD_DIR}/libs/laf/syntheticaJDCustom.jar" ] && return 0
     python3 - "${JD_DIR}/update/versioninfo/JD/extensions.requestedinstalls.json" <<'PYEOF' >&2 || true
 import json, os, sys
 path = sys.argv[1]
@@ -211,6 +215,18 @@ any_synthetica_valid() {
         synthetica_jar_valid "${j}" && return 0
     done
     return 1
+}
+
+# Classic ready = valid core synthetica.jar + valid syntheticaJDCustom.jar.
+classic_jars_ready() {
+    if [ -f "${HELPERS}" ]; then
+        python3 "${HELPERS}" classic-jars-ready "${JD_DIR}/libs/laf"
+        return $?
+    fi
+    [ -f "${JD_DIR}/libs/laf/synthetica.jar" ] || return 1
+    [ -f "${JD_DIR}/libs/laf/syntheticaJDCustom.jar" ] || return 1
+    synthetica_jar_valid "${JD_DIR}/libs/laf/synthetica.jar" || return 1
+    return 0
 }
 
 # Remove a corrupt flatlaf.jar and deregister the extension so seeding re-arms
@@ -376,7 +392,7 @@ if [ ! -f "${JD_DIR}/Core.jar" ]; then
         if [ -n "${EXPECT_LAF}" ]; then
             flatlaf_jar_valid "${JD_DIR}/libs/laf/flatlaf.jar" && theme_ok=1
         elif [ "${EXPECT_CLASSIC}" = "1" ]; then
-            any_synthetica_valid && theme_ok=1
+            classic_jars_ready && theme_ok=1
         else
             theme_ok=1
         fi
@@ -585,7 +601,8 @@ heal_restart() {
             elif [ "${EXPECT_CLASSIC}" = "1" ]; then
                 syn_ok=0
                 lic_ok=0
-                any_synthetica_valid && syn_ok=1
+                # Both core + JDCustom required before heal — core alone = Metal forever.
+                classic_jars_ready && syn_ok=1
                 [ -s "${JD_DIR}/cfg/synthetica-license.key" ] && lic_ok=1
                 if [ -f "${HELPERS}" ]; then
                     if python3 "${HELPERS}" should-heal-classic \
@@ -596,8 +613,10 @@ heal_restart() {
                         if [ "${syn_ok}" != "1" ] || [ "${lic_ok}" != "1" ]; then
                             if [ "${_classic_wait_logged:-}" != "${cur_pid}" ]; then
                                 _classic_wait_logged="${cur_pid}"
-                                echo "[jdownloader-autostart] classic LAF not ready yet (waiting for valid synthetica*.jar and/or license); not healing" >&2
+                                echo "[jdownloader-autostart] classic LAF not ready yet (waiting for synthetica.jar + syntheticaJDCustom.jar and/or license); not healing" >&2
                             fi
+                            # Keep seeding while waiting (recovers deleted JDCustom).
+                            seed_synthetica_request
                         fi
                         mismatch=0
                     fi
@@ -605,6 +624,7 @@ heal_restart() {
                     # Inline fallback when helpers missing (same gate as should-heal-classic).
                     mismatch=$((mismatch + 1))
                 else
+                    seed_synthetica_request
                     mismatch=0
                 fi
             else
@@ -726,7 +746,7 @@ while true; do
     if [ "${JD_SELFUPDATE:-true}" = "false" ] && [ -d "${JD_DIR}/libs" ]; then
         _freeze_ok=0
         if [ "${EXPECT_CLASSIC}" = "1" ]; then
-            if any_synthetica_valid && [ -s "${JD_DIR}/cfg/synthetica-license.key" ]; then
+            if classic_jars_ready && [ -s "${JD_DIR}/cfg/synthetica-license.key" ]; then
                 _freeze_ok=1
             fi
         elif [ -n "${EXPECT_LAF}" ] && flatlaf_jar_valid "${JD_DIR}/libs/laf/flatlaf.jar"; then
