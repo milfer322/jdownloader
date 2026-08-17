@@ -229,6 +229,52 @@ classic_jars_ready() {
     return 0
 }
 
+# Existing install (Core.jar already present) switching Dark/Light -> JDDEFAULT: the
+# fresh-install headless block is skipped, so synthetica.jar + syntheticaJDCustom.jar
+# were never fetched before the GUI — JD opened on Metal and stayed there. Run ONE
+# headless updater pass (classic-only gate) so jars land before the first GUI start.
+bootstrap_classic_jars_if_needed() {
+    [ "${EXPECT_CLASSIC}" = "1" ] || return 0
+    [ -f "${JD_DIR}/Core.jar" ] || return 0
+    classic_jars_ready && return 0
+    [ -f /tmp/.jd-classic-bootstrap-tried ] && return 0
+    : > /tmp/.jd-classic-bootstrap-tried
+
+    echo "[jdownloader-autostart] JDDEFAULT selected but Synthetica jars not ready — running headless updater pass (avoids Metal on template switch)..." >&2
+    ensure_synthetica_license
+    heal_invalid_synthetica
+    seed_synthetica_request
+
+    rm -f /tmp/.jd-agent.pid /tmp/.jd-laf-applied /tmp/.jd-laf-restart-request
+    java -Djava.awt.headless=true -jar "${LAUNCHER}" < /dev/null >> /config/jd-classic-bootstrap.log 2>&1 &
+    tries=0
+    settle=0
+    while [ "${tries}" -lt 90 ]; do
+        sleep 10
+        tries=$((tries + 1))
+        seed_synthetica_request
+        if classic_jars_ready; then
+            settle=$((settle + 1))
+        else
+            settle=0
+        fi
+        [ "${settle}" -ge 3 ] && break
+    done
+    if classic_jars_ready; then
+        echo "[jdownloader-autostart] classic Synthetica jars ready after headless bootstrap" >&2
+    else
+        echo "[jdownloader-autostart] classic jars still missing after 15 min headless bootstrap — GUI will retry seed/heal" >&2
+    fi
+    pkill -TERM -f "JDownloader\.jar" 2>/dev/null || true
+    w=0
+    while pgrep -f "JDownloader\.jar" > /dev/null 2>&1 && [ "${w}" -lt 12 ]; do
+        sleep 5
+        w=$((w + 1))
+    done
+    pkill -KILL -f "JDownloader\.jar" 2>/dev/null || true
+    rm -f /tmp/.jd-agent.pid /tmp/.jd-laf-applied /tmp/.jd-laf-restart-request
+}
+
 # Remove a corrupt flatlaf.jar and deregister the extension so seeding re-arms
 # and the updater fetches a fresh copy. Without this the broken jar satisfies
 # every "is it installed?" check forever and the GUI stays permanently light
@@ -436,7 +482,7 @@ echo "" >&2
 # immediately so the READY banner would only ever fire on the first boot.
 # Same for the agent's ground-truth markers: a stale .jd-laf-applied from the
 # previous run would make READY lie about THIS run.
-rm -f /tmp/.jd-ready /tmp/.jd-agent.pid /tmp/.jd-laf-applied /tmp/.jd-laf-restart-request
+rm -f /tmp/.jd-ready /tmp/.jd-agent.pid /tmp/.jd-laf-applied /tmp/.jd-laf-restart-request /tmp/.jd-classic-bootstrap-tried
 
 # Ground-truth helpers (inherited by the subshells below). The agent inside JD's JVM
 # writes /tmp/.jd-agent.pid (its JVM pid) and /tmp/.jd-laf-applied (the class name of
@@ -643,6 +689,10 @@ heal_restart() {
 ) &
 
 echo "[jdownloader-autostart] Starting JDownloader (first start may take a few minutes)" >&2
+
+# Classic-only: fetch synthetica.jar + syntheticaJDCustom.jar before GUI when switching
+# from an existing Dark/Light install (fresh installs use the headless block above).
+bootstrap_classic_jars_if_needed
 
 fast_exits=0
 while true; do

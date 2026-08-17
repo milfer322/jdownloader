@@ -435,3 +435,18 @@ def test_autostart_classic_ready_uses_classic_jars_ready():
     assert "classic_jars_ready" in auto
     assert "classic-jars-ready" in auto
     assert "syntheticaJDCustom.jar" in auto
+
+
+def test_autostart_classic_bootstrap_before_gui_on_template_switch():
+    """Existing Dark/Light -> JDDEFAULT must bootstrap Synthetica before GUI (classic-only)."""
+    auto = AUTOSTART.read_text(encoding="utf-8")
+    assert "bootstrap_classic_jars_if_needed" in auto
+    assert '[ "${EXPECT_CLASSIC}" = "1" ] || return 0' in auto
+    # Called once before the launch loop, not inside Dark/Light branches
+    pos = auto.index("bootstrap_classic_jars_if_needed")
+    loop = auto.index("while true; do", pos)
+    assert pos < loop
+    body = auto.split("bootstrap_classic_jars_if_needed() {")[1].split("\n}\n")[0]
+    assert "headless" in body.lower()
+    assert "classic_jars_ready" in body
+    assert "/tmp/.jd-classic-bootstrap-tried" in auto
