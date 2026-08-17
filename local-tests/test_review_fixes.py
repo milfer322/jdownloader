@@ -285,19 +285,22 @@ def test_tick_gates_enforce_dark_chrome_behind_want_dark_laf():
         "private static", 1
     )[0]
     assert "if (!wantDarkLaf()) return;" in chrome
-    # premain: dark progress defaults only when wantDarkLaf
+    # premain: installProgressBarDefaults always (clears dark overrides on Light)
+    premain = src.split("public static void premain")[1].split("public static void watch")[0]
+    assert "installProgressBarDefaults();" in premain
+    # LAF listener: always refresh defaults; retint only on Dark
+    assert "installProgressBarDefaults();" in src.split("ensureLafChangeListener")[1]
     assert re.search(
-        r"if\s*\(\s*wantDarkLaf\s*\(\s*\)\s*\)\s*\{\s*installProgressBarDefaults\s*\(\s*\)\s*;",
-        src,
-    )
-    # LAF listener: same gate
-    assert re.search(
-        r"if\s*\(\s*wantDarkLaf\s*\(\s*\)\s*\)\s*\{\s*"
         r"installProgressBarDefaults\s*\(\s*\)\s*;\s*"
-        r"retintProgressBars\s*\(\s*\)\s*;",
+        r"if\s*\(\s*wantDarkLaf\s*\(\s*\)\s*\)\s*retintProgressBars\s*\(\s*\)\s*;",
         src,
         re.S,
     )
+    # applyCustomDefaults skips dark re-apply on Light
+    acd = src.split("private static void applyCustomDefaults()")[1].split(
+        "// -------------------------------------------------------- speed graph"
+    )[0]
+    assert "if (!wantDarkLaf())" in acd and "lafRefreshDone = true" in acd
 
 
 def test_autostart_theme_aware_xsetroot():

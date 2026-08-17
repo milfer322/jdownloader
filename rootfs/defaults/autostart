@@ -93,7 +93,7 @@ fi
 # by the agent) — headless does not fetch this package. Idempotent; no-op once
 # a VALID flatlaf.jar exists (a truncated file must keep re-requesting).
 seed_flatlaf_request() {
-    [ -z "${EXPECT_LAF}" ] && return 0
+    # Always seed flatlaf-themes (even on JDDEFAULT) so Dark/Light work after a theme switch.
     # Parked-for-classic does not count — we still need a live valid jar for Dark/Light.
     if flatlaf_jar_valid "${JD_DIR}/libs/laf/flatlaf.jar"; then
         return 0
@@ -275,12 +275,47 @@ bootstrap_classic_jars_if_needed() {
     rm -f /tmp/.jd-agent.pid /tmp/.jd-laf-applied /tmp/.jd-laf-restart-request
 }
 
+# Existing install switching to Dark/Light without flatlaf.jar: brief headless fetch
+# before GUI so JD does not open on Metal (JDDEFAULT uses bootstrap_classic_jars_if_needed).
+bootstrap_flatlaf_if_needed() {
+    [ -n "${EXPECT_LAF}" ] || return 0
+    [ -f "${JD_DIR}/Core.jar" ] || return 0
+    flatlaf_jar_valid "${JD_DIR}/libs/laf/flatlaf.jar" && return 0
+    [ -f /tmp/.jd-flatlaf-bootstrap-tried ] && return 0
+    : > /tmp/.jd-flatlaf-bootstrap-tried
+
+    echo "[jdownloader-autostart] FlatLaf theme selected but flatlaf.jar missing — fetching extension headless..." >&2
+    heal_invalid_flatlaf
+    seed_flatlaf_request
+    rm -f /tmp/.jd-agent.pid /tmp/.jd-laf-applied /tmp/.jd-laf-restart-request
+    java -Djava.awt.headless=true -jar "${LAUNCHER}" < /dev/null >> /config/jd-flatlaf-bootstrap.log 2>&1 &
+    htries=0
+    while [ "${htries}" -lt 36 ]; do
+        sleep 5
+        htries=$((htries + 1))
+        seed_flatlaf_request
+        flatlaf_jar_valid "${JD_DIR}/libs/laf/flatlaf.jar" && break
+    done
+    if flatlaf_jar_valid "${JD_DIR}/libs/laf/flatlaf.jar"; then
+        echo "[jdownloader-autostart] flatlaf.jar ready after headless bootstrap" >&2
+    else
+        echo "[jdownloader-autostart] flatlaf.jar still missing — GUI will install via agent dialog" >&2
+    fi
+    pkill -TERM -f "JDownloader\.jar" 2>/dev/null || true
+    w=0
+    while pgrep -f "JDownloader\.jar" > /dev/null 2>&1 && [ "${w}" -lt 12 ]; do
+        sleep 5
+        w=$((w + 1))
+    done
+    pkill -KILL -f "JDownloader\.jar" 2>/dev/null || true
+    rm -f /tmp/.jd-agent.pid /tmp/.jd-laf-applied /tmp/.jd-laf-restart-request
+}
+
 # Remove a corrupt flatlaf.jar and deregister the extension so seeding re-arms
 # and the updater fetches a fresh copy. Without this the broken jar satisfies
 # every "is it installed?" check forever and the GUI stays permanently light
 # (CI probe ground truth + matching forum field report).
 heal_invalid_flatlaf() {
-    [ -z "${EXPECT_LAF}" ] && return 0
     jar="${JD_DIR}/libs/laf/flatlaf.jar"
     [ -f "${jar}" ] || return 0
     flatlaf_jar_valid "${jar}" && return 0
@@ -491,7 +526,7 @@ echo "" >&2
 # immediately so the READY banner would only ever fire on the first boot.
 # Same for the agent's ground-truth markers: a stale .jd-laf-applied from the
 # previous run would make READY lie about THIS run.
-rm -f /tmp/.jd-ready /tmp/.jd-agent.pid /tmp/.jd-laf-applied /tmp/.jd-laf-restart-request /tmp/.jd-classic-bootstrap-tried
+rm -f /tmp/.jd-ready /tmp/.jd-agent.pid /tmp/.jd-laf-applied /tmp/.jd-laf-restart-request /tmp/.jd-classic-bootstrap-tried /tmp/.jd-flatlaf-bootstrap-tried
 
 # Ground-truth helpers (inherited by the subshells below). The agent inside JD's JVM
 # writes /tmp/.jd-agent.pid (its JVM pid) and /tmp/.jd-laf-applied (the class name of
@@ -553,9 +588,15 @@ heal_restart() {
             waited=0
             # House ASCII banner right above the READY status (brand + ready as
             # the log's final block; stdout redirected into the service log).
+            case "${JD_THEME:-Dark}" in
+                JDDEFAULT|jddefault|*[Dd][Ee][Ff][Aa][Uu][Ll][Tt]*) _sub="Default UI · Selkies · Java 21" ;;
+                Light|JD_Plain|*[Ll][Ii][Gg][Hh][Tt]*) _sub="Light UI · Selkies · Java 21" ;;
+                Dark|JD_Plain_Dark|*[Dd][Aa][Rr][Kk]*) _sub="Modern dark UI · Selkies · Java 21" ;;
+                *) _sub="Modern UI · Selkies · Java 21" ;;
+            esac
             /usr/local/bin/print-banner.sh \
                 "JDownloader for Unraid" \
-                "Modern dark UI · Selkies · Java 21" \
+                "${_sub}" \
                 >&2 2>/dev/null || true
             # Clean two-line status (house look: no rule/box walls).
             echo "  ✓ JDOWNLOADER IS READY" >&2
@@ -702,6 +743,8 @@ echo "[jdownloader-autostart] Starting JDownloader (first start may take a few m
 # Classic-only: fetch synthetica.jar + syntheticaJDCustom.jar before GUI when switching
 # from an existing Dark/Light install (fresh installs use the headless block above).
 bootstrap_classic_jars_if_needed
+# FlatLaf-only: fetch flatlaf.jar before GUI when switching from JDDEFAULT (or fresh volume).
+bootstrap_flatlaf_if_needed
 
 fast_exits=0
 while true; do
@@ -713,6 +756,7 @@ while true; do
             ensure_synthetica_license
             heal_invalid_synthetica
             seed_synthetica_request
+            seed_flatlaf_request
             # Park flatlaf.jar so JD cannot keep applying FlatLaf Light/Dark over classic.
             if [ -f "${JD_DIR}/libs/laf/flatlaf.jar" ]; then
                 mv -f "${JD_DIR}/libs/laf/flatlaf.jar" "${JD_DIR}/libs/laf/flatlaf.jar.disabled-for-classic" 2>/dev/null || true
