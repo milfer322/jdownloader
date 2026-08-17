@@ -437,6 +437,24 @@ def test_autostart_classic_ready_uses_classic_jars_ready():
     assert "syntheticaJDCustom.jar" in auto
 
 
+def test_headless_flatlaf_does_not_wait_for_jar():
+    """Dark/Light must not block headless on flatlaf.jar (never arrives → Metal after 15 min)."""
+    auto = AUTOSTART.read_text(encoding="utf-8")
+    start = auto.index('if [ ! -f "${JD_DIR}/Core.jar" ]; then')
+    end = auto.index("# The READY marker must be cleared")
+    block = auto[start:end]
+    assert "classic_jars_ready && theme_ok=1" in block
+    assert "flatlaf_jar_valid" not in block
+    assert "FlatLaf is installed on the first GUI start" in block
+
+
+def test_seed_flatlaf_requires_valid_jar_not_mere_existence():
+    auto = AUTOSTART.read_text(encoding="utf-8")
+    fn = auto.split("seed_flatlaf_request() {")[1].split("\n}\n")[0]
+    assert "flatlaf_jar_valid" in fn
+    assert '[ -f "${JD_DIR}/libs/laf/flatlaf.jar" ] && return 0' not in fn
+
+
 def test_autostart_classic_bootstrap_before_gui_on_template_switch():
     """Existing Dark/Light -> JDDEFAULT must bootstrap Synthetica before GUI (classic-only)."""
     auto = AUTOSTART.read_text(encoding="utf-8")

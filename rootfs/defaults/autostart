@@ -85,19 +85,19 @@ else
     : "${EXPECT_LAF:=flatdark}"
 fi
 
-# Request the FlatLaf themes extension in JD's update registry. The design-install
-# dialog only ever existed because the GUI installer requested this extension
-# interactively — with the request pre-recorded, the UPDATER installs it like any
-# other package: during the headless pre-install on fresh setups, or on the next
-# periodic update check of an existing install that is missing it. Ground truth
+# Request the FlatLaf themes extension in JD's update registry. Ground truth
 # from JD source: LookAndFeelType maps every FlatLaf theme to extension id
 # "flatlaf-themes"; the request list is a PLAIN JSON ARRAY at
-# update/versioninfo/JD/extensions.requestedinstalls.json (the same sanctioned
-# path other JD Docker images use). Idempotent; no-op once flatlaf.jar exists.
+# update/versioninfo/JD/extensions.requestedinstalls.json.
+# FlatLaf still needs the first GUI start (design-install dialog, auto-confirmed
+# by the agent) — headless does not fetch this package. Idempotent; no-op once
+# a VALID flatlaf.jar exists (a truncated file must keep re-requesting).
 seed_flatlaf_request() {
     [ -z "${EXPECT_LAF}" ] && return 0
-    # Parked-for-classic does not count — we still need a live flatlaf.jar for Dark/Light.
-    [ -f "${JD_DIR}/libs/laf/flatlaf.jar" ] && return 0
+    # Parked-for-classic does not count — we still need a live valid jar for Dark/Light.
+    if flatlaf_jar_valid "${JD_DIR}/libs/laf/flatlaf.jar"; then
+        return 0
+    fi
     python3 - "${JD_DIR}/update/versioninfo/JD/extensions.requestedinstalls.json" <<'PYEOF' >&2 || true
 import json, os, sys
 path = sys.argv[1]
@@ -416,8 +416,15 @@ fi
 # RUNNING headless daemon that must be stopped before the GUI phase can take
 # the JD2 single-instance lock. JAVA_TOOL_OPTIONS is not exported yet, so this
 # JVM runs without the agent — nothing to click headless anyway.
+#
+# Theme settle is CLASSIC-ONLY. Waiting for flatlaf.jar here (Dark/Light) never
+# succeeds headless, burned ~15 min, then the GUI opened on Metal. Synthetica
+# CAN land headless, so JDDEFAULT still waits for both classic jars.
 if [ ! -f "${JD_DIR}/Core.jar" ]; then
     echo "[jdownloader-autostart] fresh install: silent headless pre-install (no GUI = no dialogs; ~3-5 min)..." >&2
+    if [ -n "${EXPECT_LAF}" ]; then
+        echo "[jdownloader-autostart] JD_THEME=${JD_THEME:-Dark}: FlatLaf is installed on the first GUI start (not during headless)" >&2
+    fi
     rm -f /tmp/.jd-agent.pid /tmp/.jd-laf-applied /tmp/.jd-laf-restart-request
     # Pre-request the theme extension this JD_THEME needs (FlatLaf OR Synthetica).
     if [ -n "${EXPECT_LAF}" ]; then
@@ -426,19 +433,15 @@ if [ ! -f "${JD_DIR}/Core.jar" ]; then
         seed_synthetica_request
     fi
     java -Djava.awt.headless=true -jar "${LAUNCHER}" < /dev/null >> /config/jd-headless-install.log 2>&1 &
-    # Settle = Core.jar + build.json, AND the theme jars this JD_THEME needs
-    # (FlatLaf for Dark/Light, synthetica.jar for classic JDDEFAULT). Without that
-    # wait, GUI starts on Metal because SyntheticaHelper has no jars yet.
     tries=0
     settle=0
     while [ "${tries}" -lt 90 ]; do
         sleep 10
         tries=$((tries + 1))
         theme_ok=0
-        if [ -n "${EXPECT_LAF}" ]; then
-            flatlaf_jar_valid "${JD_DIR}/libs/laf/flatlaf.jar" && theme_ok=1
-        elif [ "${EXPECT_CLASSIC}" = "1" ]; then
+        if [ "${EXPECT_CLASSIC}" = "1" ]; then
             classic_jars_ready && theme_ok=1
+            seed_synthetica_request
         else
             theme_ok=1
         fi
@@ -465,14 +468,20 @@ if [ ! -f "${JD_DIR}/Core.jar" ]; then
     done
     pkill -KILL -f "JDownloader\.jar" 2>/dev/null || true
     rm -f /tmp/.jd-agent.pid /tmp/.jd-laf-applied /tmp/.jd-laf-restart-request
+    # Headless JD can recreate update/versioninfo and drop our pre-seed. Re-arm.
+    if [ -n "${EXPECT_LAF}" ]; then
+        seed_flatlaf_request
+    elif [ "${EXPECT_CLASSIC}" = "1" ]; then
+        seed_synthetica_request
+    fi
 fi
 
 echo "" >&2
 echo "  ============================================================" >&2
 echo "   JDownloader is starting." >&2
-echo "   The FIRST start installs JDownloader + its dark theme and" >&2
-echo "   can take a few minutes — most of it as a silent headless" >&2
-echo "   pre-install while the WebUI shows an empty dark desktop." >&2
+echo "   The FIRST start installs JDownloader and the selected theme" >&2
+echo "   (Dark / Light / JDDEFAULT) and can take a few minutes." >&2
+echo "   Dark and Light finish FlatLaf on the first GUI start." >&2
 echo "   Do NOT restart the container. Wait for the READY banner below." >&2
 echo "  ============================================================" >&2
 echo "" >&2
@@ -743,7 +752,7 @@ while true; do
                 THEME_APPLY="JDDEFAULT"
                 echo "[jdownloader-autostart] JD_THEME=${JD_THEME:-Dark} but flatlaf.jar missing — holding classic DEFAULT until FlatLaf installs (avoids Metal)" >&2
             else
-                echo "[jdownloader-autostart] WARNING: FlatLaf theme selected and neither flatlaf.jar nor Synthetica is ready — UI may show Metal until the updater finishes" >&2
+                echo "[jdownloader-autostart] JD_THEME=${JD_THEME:-Dark}: writing FlatLaf into cfg so the GUI install dialog can run (agent auto-confirms; Metal until flatlaf.jar lands)" >&2
             fi
         fi
     fi
